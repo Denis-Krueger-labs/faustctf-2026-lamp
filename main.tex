@@ -1,0 +1,728 @@
+\documentclass[11pt]{article}
+
+% ============================================================
+% LAMP -- FAUST CTF 2026
+% TECHNICAL SECURITY RESEARCH / CTF WRITEUP
+%
+% LaTeX // Apache // MariaDB // Pain
+% ============================================================
+
+% ------------------------------------------------------------
+% Metadata
+% ------------------------------------------------------------
+
+\newcommand{\ReportDate}{September 28, 2026}
+\newcommand{\ReportDateISO}{2026.09.28}
+
+\newcommand{\ReportTitle}{LAMP}
+
+\newcommand{\ReportSubtitle}{
+  From a Path Header to Container-Root RCE Through XeLaTeX
+}
+
+\newcommand{\ReportAuthor}{Denis Krüger}
+\newcommand{\ReportEvent}{FAUST CTF 2026}
+\newcommand{\ReportTeam}{t3l3tzp3\_wu3}
+
+% ------------------------------------------------------------
+% Encoding and language
+% ------------------------------------------------------------
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+
+% ------------------------------------------------------------
+% Typography
+% ------------------------------------------------------------
+
+\usepackage{lmodern}
+\usepackage[scaled=0.94]{helvet}
+\usepackage{microtype}
+\usepackage{parskip}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7em}
+
+\raggedbottom
+\clubpenalty=10000
+\widowpenalty=10000
+\displaywidowpenalty=10000
+\emergencystretch=2em
+
+\newcommand{\displayfont}{\sffamily}
+
+% ------------------------------------------------------------
+% Page layout
+% ------------------------------------------------------------
+
+\usepackage[
+  a4paper,
+  top=2.5cm,
+  bottom=2.6cm,
+  left=2.7cm,
+  right=2.7cm
+]{geometry}
+
+% ------------------------------------------------------------
+% MORI palette
+% ------------------------------------------------------------
+
+\usepackage{xcolor}
+
+\definecolor{MoriNight}{HTML}{020006}
+\definecolor{MoriPanel}{HTML}{0B0610}
+\definecolor{MoriDeepPanel}{HTML}{13091C}
+
+\definecolor{MoriPaper}{HTML}{F4F0FF}
+\definecolor{MoriInk}{HTML}{17121D}
+
+\definecolor{MoriMuted}{HTML}{BDA9E6}
+\definecolor{MoriLavender}{HTML}{C9C2D6}
+
+\definecolor{MoriPurple}{HTML}{9D4DFF}
+\definecolor{MoriSoftPurple}{HTML}{C08CFF}
+\definecolor{MoriDeepPurple}{HTML}{4A147A}
+
+\definecolor{MoriMist}{HTML}{F7F4FA}
+\definecolor{MoriCode}{HTML}{F1EDF5}
+\definecolor{MoriRule}{HTML}{DED6E7}
+\definecolor{MoriGray}{HTML}{7D7485}
+
+% ------------------------------------------------------------
+% Graphics / layout
+% ------------------------------------------------------------
+
+\usepackage{tikz}
+\usetikzlibrary{calc,positioning}
+
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+
+% ------------------------------------------------------------
+% Code and terminal blocks
+% ------------------------------------------------------------
+
+\usepackage{listings}
+
+\lstdefinestyle{terminal}{
+  backgroundcolor=\color{MoriCode},
+  basicstyle=\ttfamily\footnotesize\color{MoriInk},
+  frame=l,
+  rulecolor=\color{MoriPurple},
+  framerule=2.2pt,
+  framesep=9pt,
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  tabsize=4,
+  xleftmargin=0.4em,
+  xrightmargin=0.2em,
+  framexleftmargin=0pt,
+  aboveskip=1em,
+  belowskip=1em,
+  captionpos=b
+}
+
+\lstset{style=terminal}
+
+% ------------------------------------------------------------
+% Callout boxes
+% ------------------------------------------------------------
+
+\usepackage[most]{tcolorbox}
+
+\tcbset{
+  moribox/.style={
+    enhanced,
+    breakable,
+    sharp corners,
+    boxrule=0.45pt,
+    colframe=MoriRule,
+    colback=MoriMist,
+    coltext=MoriInk,
+    borderline west={2.6pt}{0pt}{MoriPurple},
+    left=4mm,
+    right=4mm,
+    top=3mm,
+    bottom=3mm,
+    before skip=1em,
+    after skip=1em
+  }
+}
+
+\newtcolorbox{findingbox}{
+  moribox,
+  before upper={%
+    \displayfont\scriptsize\bfseries\color{MoriPurple}
+    FINDING\enspace//\par\smallskip
+    \normalfont\normalsize\color{MoriInk}%
+  }
+}
+
+\newtcolorbox{evidencebox}{
+  moribox,
+  borderline west={2pt}{0pt}{MoriLavender},
+  before upper={%
+    \displayfont\scriptsize\bfseries\color{MoriMuted}
+    EVIDENCE\enspace//\par\smallskip
+    \normalfont\normalsize\color{MoriInk}%
+  }
+}
+
+\newtcolorbox{checkpointbox}{
+  moribox,
+  borderline west={3pt}{0pt}{MoriPurple},
+  before upper={%
+    \displayfont\scriptsize\bfseries\color{MoriPurple}
+    CHECKPOINT\enspace//\par\smallskip
+    \normalfont\normalsize\color{MoriInk}%
+  }
+}
+
+\newtcolorbox{limitationbox}{
+  moribox,
+  colback=MoriCode,
+  borderline west={2pt}{0pt}{MoriGray},
+  before upper={%
+    \displayfont\scriptsize\bfseries\color{MoriMuted}
+    LIMITATION\enspace//\par\smallskip
+    \normalfont\normalsize\color{MoriInk}%
+  }
+}
+
+% ------------------------------------------------------------
+% Headings
+% ------------------------------------------------------------
+
+\usepackage{titlesec}
+
+\titleformat{\section}
+  {\displayfont\LARGE\bfseries\color{MoriDeepPurple}}
+  {\thesection}
+  {0.8em}
+  {}
+
+\titleformat{\subsection}
+  {\displayfont\Large\bfseries\color{MoriInk}}
+  {\thesubsection}
+  {0.8em}
+  {}
+
+\titleformat{\subsubsection}
+  {\displayfont\large\bfseries\color{MoriInk}}
+  {\thesubsubsection}
+  {0.8em}
+  {}
+
+% ------------------------------------------------------------
+% Headers / footers
+% ------------------------------------------------------------
+
+\usepackage{fancyhdr}
+
+\pagestyle{fancy}
+\fancyhf{}
+
+\fancyhead[L]{%
+  \displayfont\footnotesize\bfseries
+  \textcolor{MoriDeepPurple}{LAMP}
+}
+
+\fancyhead[R]{%
+  \displayfont\footnotesize
+  \textcolor{MoriGray}{FAUST CTF 2026}
+}
+
+\fancyfoot[C]{%
+  \displayfont\footnotesize
+  \textcolor{MoriGray}{\thepage}
+}
+
+\renewcommand{\headrulewidth}{0.3pt}
+
+\renewcommand{\headrule}{%
+  \hbox to\headwidth{%
+    \color{MoriRule}
+    \leaders\hrule height \headrulewidth
+    \hfill
+  }
+}
+
+% ------------------------------------------------------------
+% Hyperlinks
+% ------------------------------------------------------------
+
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=MoriPurple,
+  citecolor=MoriPurple,
+  urlcolor=MoriPurple,
+  pdfborder={0 0 0},
+  pdftitle={LAMP - FAUST CTF 2026},
+  pdfsubject={Technical Security Research and CTF Writeup},
+  pdfauthor={Denis Krüger}
+}
+
+% ------------------------------------------------------------
+% Utility
+% ------------------------------------------------------------
+
+\newcommand{\code}[1]{%
+  \begingroup
+  \setlength{\fboxsep}{1.7pt}%
+  \colorbox{MoriCode}{%
+    \texttt{\small\color{MoriDeepPurple}\strut #1}%
+  }%
+  \endgroup
+}
+
+% ------------------------------------------------------------
+% Cover artwork
+% ------------------------------------------------------------
+
+\newcommand{\LampGraphic}[1]{%
+  \IfFileExists{assets/lamp.png}{%
+    \includegraphics[width=#1]{assets/lamp.png}%
+  }{%
+    \PackageWarning{lamp-report}{%
+      assets/lamp.png not found; cover lamp omitted%
+    }%
+    \mbox{}%
+  }%
+}
+
+% ============================================================
+% FRONT COVER
+% ============================================================
+
+\newcommand{\MakeFrontCover}{%
+  \begin{titlepage}
+    \thispagestyle{empty}
+
+    \begin{tikzpicture}[
+      remember picture,
+      overlay,
+      x=1mm,
+      y=1mm
+    ]
+
+      \begin{scope}[shift={(current page.south west)}]
+
+        % Background
+        \fill[MoriNight]
+          (0,0)
+          rectangle
+          (210,297);
+
+        % Purple left rail
+        \fill[MoriPurple]
+          (0,0)
+          rectangle
+          (7,297);
+
+        % Top rule
+        \draw[
+          MoriPurple,
+          line width=0.45pt
+        ]
+          (18,276)
+          --
+          (192,276);
+
+        % Giant lamp artwork
+        \node[
+          anchor=east,
+          inner sep=0pt,
+          opacity=0.82
+        ] at (240,150) {%
+          \LampGraphic{186mm}%
+        };
+
+        % Header
+        \node[
+          anchor=west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{7.8}{9}\selectfont,
+          text=MoriLavender
+        ] at (29,268) {
+          TECHNICAL SECURITY RESEARCH REPORT
+        };
+
+        \node[
+          anchor=east,
+          inner sep=0pt,
+          font=\ttfamily\bfseries\fontsize{8.3}{9}\selectfont,
+          text=MoriPurple
+        ] at (184,268) {
+          FAUST CTF 2026
+        };
+
+        % Main title
+        \node[
+          anchor=west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{48}{50}\selectfont,
+          text=MoriPaper
+        ] at (27,223) {
+          LAMP
+        };
+
+        % Acronym expansion
+        \node[
+          anchor=west,
+          inner sep=0pt,
+          font=\ttfamily\bfseries\fontsize{6.8}{8.2}\selectfont,
+          text=MoriMuted
+        ] at (28,210) {
+          LATEX
+          \enspace
+          \textcolor{MoriPurple}{//}
+          \enspace
+          APACHE
+          \enspace
+          \textcolor{MoriPurple}{//}
+          \enspace
+          MARIADB
+          \enspace
+          \textcolor{MoriPurple}{//}
+          \enspace
+          \textcolor{MoriPurple}{PAIN}
+        };
+
+        % Subtitle
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          text width=108mm,
+          align=left,
+          font=\displayfont\fontsize{17.5}{21}\selectfont,
+          text=MoriPaper
+        ] at (27,196) {
+          From a Path Header to\\
+          Container-Root RCE\\
+          Through XeLaTeX
+        };
+
+        % Technical keywords
+        \node[
+          anchor=west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{6.8}{8}\selectfont,
+          text=MoriGray
+        ] at (27,150) {
+          TEX INJECTION
+          \enspace
+          \textcolor{MoriPurple}{//}
+          \enspace
+          PATH HEADER
+          \enspace
+          \textcolor{MoriPurple}{//}
+          \enspace
+          SHELL ESCAPE
+          \enspace
+          \textcolor{MoriPurple}{//}
+          \enspace
+          RCE
+        };
+
+        % Metadata panel
+        \fill[
+          MoriPanel,
+          opacity=0.94
+        ]
+          (27,41)
+          rectangle
+          (184,84);
+
+        \draw[
+          MoriMuted,
+          line width=0.35pt
+        ]
+          (27,41)
+          rectangle
+          (184,84);
+
+        \fill[MoriPurple]
+          (27,41)
+          rectangle
+          (27.8,84);
+
+        % AUTHOR
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{6.5}{7.5}\selectfont,
+          text=MoriGray
+        ] at (33,75) {
+          AUTHOR
+        };
+
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{9}{10}\selectfont,
+          text=MoriPaper
+        ] at (33,69) {
+          \ReportAuthor
+        };
+
+        % PROJECT
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{6.5}{7.5}\selectfont,
+          text=MoriGray
+        ] at (78,75) {
+          PROJECT
+        };
+
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{9}{10}\selectfont,
+          text=MoriPaper
+        ] at (78,69) {
+          LAMP Security Research
+        };
+
+        % IMPACT
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{6.5}{7.5}\selectfont,
+          text=MoriGray
+        ] at (132,75) {
+          IMPACT
+        };
+
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          text width=48mm,
+          font=\displayfont\bfseries\fontsize{8.4}{9.5}\selectfont,
+          text=MoriPaper
+        ] at (132,69) {
+          Container-Root RCE
+        };
+
+        % ENVIRONMENT
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{6.5}{7.5}\selectfont,
+          text=MoriGray
+        ] at (33,57) {
+          ENVIRONMENT
+        };
+
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{9}{10}\selectfont,
+          text=MoriPaper
+        ] at (33,51) {
+          FAUST CTF 2026
+        };
+
+        % FOCUS
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{6.5}{7.5}\selectfont,
+          text=MoriGray
+        ] at (78,57) {
+          FOCUS
+        };
+
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{9}{10}\selectfont,
+          text=MoriPaper
+        ] at (78,51) {
+          Exploit / Analyze / Automate
+        };
+
+        % REPORT DATE
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{6.5}{7.5}\selectfont,
+          text=MoriGray
+        ] at (132,57) {
+          REPORT DATE
+        };
+
+        \node[
+          anchor=north west,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{9}{10}\selectfont,
+          text=MoriPaper
+        ] at (132,51) {
+          \ReportDate
+        };
+
+        % Footer
+        \node[
+          anchor=west,
+          inner sep=0pt,
+          font=\displayfont\fontsize{6.8}{8}\selectfont,
+          text=MoriGray
+        ] at (27,29) {
+          \ReportTeam
+          \enspace
+          //
+          \enspace
+          offensive security research
+        };
+
+        \node[
+          anchor=east,
+          inner sep=0pt,
+          font=\displayfont\fontsize{6.8}{8}\selectfont,
+          text=MoriGray
+        ] at (184,29) {
+          live competition / documented exploitation
+        };
+
+        % Decorative service port
+        \node[
+          anchor=south east,
+          inner sep=0pt,
+          font=\displayfont\bfseries\fontsize{40}{42}\selectfont,
+          text=MoriPaper,
+          opacity=0.065
+        ] at (190,8) {
+          1337
+        };
+
+      \end{scope}
+
+    \end{tikzpicture}
+
+    \null
+  \end{titlepage}
+}
+
+% ============================================================
+% DOCUMENT
+% ============================================================
+
+\begin{document}
+
+% ------------------------------------------------------------
+% Front cover
+% ------------------------------------------------------------
+
+\hypersetup{pageanchor=false}
+
+\MakeFrontCover
+
+\hypersetup{pageanchor=true}
+
+% ------------------------------------------------------------
+% Front matter
+% ------------------------------------------------------------
+
+\pagenumbering{roman}
+
+\section*{Abstract}
+
+\addcontentsline{toc}{section}{Abstract}
+
+\begin{tcolorbox}[
+  enhanced,
+  breakable,
+  sharp corners,
+  frame hidden,
+  colback=MoriPaper,
+  borderline west={2.4pt}{0pt}{MoriPurple},
+  left=4mm,
+  right=2mm,
+  top=1mm,
+  bottom=1mm
+]
+
+This report documents the analysis and exploitation of the
+\emph{LAMP} service during FAUST CTF 2026.
+
+The service---appropriately expanded as
+\emph{LaTeX, Apache, MariaDB, Pain}---implemented significant portions
+of its HTTP processing and application logic using XeLaTeX.
+
+The investigation identified multiple weaknesses across the service's
+request parsing, TeX processing, persistence, and rendering mechanisms.
+Individually, these weaknesses exposed constrained primitives including
+arbitrary file access and stored TeX injection. When chained together,
+they enabled operating system command execution as root within the LAMP
+service container.
+
+A 32-byte limit on the primary injection field initially constrained the
+usefulness of the command-execution primitive. The restriction was
+subsequently bypassed by abusing newline handling in persisted ship
+names, allowing attacker-controlled files within the application's
+storage directory to act as shell-command carriers.
+
+The completed exploit chain was operationalized during the live
+Attack/Defense competition, used to recover service flags from opposing
+teams, and integrated with the team's automated flag-submission
+infrastructure.
+
+\end{tcolorbox}
+
+% ------------------------------------------------------------
+% Contents
+% ------------------------------------------------------------
+
+\clearpage
+
+\markboth{Contents}{}
+
+\tableofcontents
+
+\clearpage
+
+% ------------------------------------------------------------
+% Main report
+% ------------------------------------------------------------
+
+\pagenumbering{arabic}
+
+\input{sections/01-introduction}
+\clearpage
+
+\input{sections/02-service-overview}
+\clearpage
+
+\input{sections/03-path-header}
+\clearpage
+
+\input{sections/04-stored-tex-injection}
+\clearpage
+
+\input{sections/05-rce}
+\clearpage
+
+\input{sections/06-carrier-bypass}
+\clearpage
+
+\input{sections/07-flag-harvesting}
+\clearpage
+
+\input{sections/08-automation}
+\clearpage
+
+\input{sections/09-results}
+\clearpage
+
+\input{sections/10-lessons-learned}
+
+\end{document}

@@ -1,0 +1,173 @@
+% ============================================================
+% 01 -- WHAT THE HELL IS LAMP?
+% ============================================================
+
+\section{What the Hell Is LAMP?}
+\label{sec:introduction}
+
+LAMP was one of the services deployed during FAUST CTF 2026.
+
+From the outside, it behaved like a fairly normal web application:
+users could register accounts, create ships, add components, and later
+view the resulting state through HTTP requests.
+
+The implementation was considerably less normal.
+
+Large parts of the service were processed through XeLaTeX.
+
+\begin{center}
+  \displayfont\bfseries
+  LaTeX // Apache // MariaDB // \textcolor{MoriPurple}{Pain}
+\end{center}
+
+That last component became increasingly accurate as the analysis
+continued.
+
+
+% ------------------------------------------------------------
+% 1.1
+% ------------------------------------------------------------
+
+\subsection{Why XeLaTeX Matters}
+
+LaTeX is normally used as a document preparation system. A source file
+contains text together with commands, and a TeX engine interprets those
+commands to produce a document.
+
+A minimal example looks like this:
+
+\begin{lstlisting}
+\documentclass{article}
+
+\begin{document}
+Hello.
+\end{document}
+\end{lstlisting}
+
+The important security detail is that TeX commands are not merely
+formatting markers.
+
+TeX includes macros, token expansion, file input and output, dynamic
+control sequences, and other behaviour that makes it much closer to a
+small programming environment than to a passive markup format.
+
+That becomes interesting when values controlled by an HTTP client stop
+being treated as ordinary text and instead become TeX source.
+
+LAMP did exactly that in several places.
+
+
+% ------------------------------------------------------------
+% 1.2
+% ------------------------------------------------------------
+
+\subsection{And Then There Was Shell Escape}
+
+The service started XeLaTeX using:
+
+\begin{lstlisting}
+xelatex -8bit --shell-escape /srv/main.tex
+\end{lstlisting}
+
+The important part is:
+
+\begin{center}
+  \code{--shell-escape}
+\end{center}
+
+Shell escape allows TeX functionality to invoke external operating-system
+commands.
+
+This is not automatically a vulnerability. If all TeX input is trusted,
+it may be an intentional feature.
+
+LAMP, however, processed attacker-controlled HTTP and database values
+through that same TeX environment.
+
+\begin{findingbox}
+The interesting question was therefore not whether shell escape existed.
+
+The question was whether user-controlled data could be transformed into
+executable TeX before it reached a shell-enabled primitive.
+\end{findingbox}
+
+
+% ------------------------------------------------------------
+% 1.3
+% ------------------------------------------------------------
+
+\subsection{The Exploit Chain}
+
+The final exploit did not come from a single bug.
+
+Instead, several smaller weaknesses could be chained together:
+
+\begin{enumerate}
+
+  \item A client-controlled \code{Path} header could overwrite the
+        path used by the application after the original request path
+        had already been validated.
+
+  \item Component metadata stored in MariaDB was later inserted back
+        into the generated TeX and interpreted during rendering.
+
+  \item The useful injection field was limited to 32 bytes, restricting
+        the commands that could be executed directly.
+
+  \item A separate newline injection in persisted ship data provided a
+        place to store a much longer shell command.
+
+\end{enumerate}
+
+Together, these behaviours provided:
+
+\begin{center}
+  \displayfont
+  arbitrary file access
+  $\longrightarrow$
+  stored TeX injection
+  $\longrightarrow$
+  command execution
+  $\longrightarrow$
+  flag harvesting
+\end{center}
+
+The resulting command execution ran as root inside the LAMP service
+container.
+
+Throughout this writeup, this is therefore described as
+\emph{container-root RCE}. The exploit did not by itself demonstrate
+root access to the underlying Vulnbox host.
+
+
+% ------------------------------------------------------------
+% 1.4
+% ------------------------------------------------------------
+
+\subsection{What This Writeup Covers}
+
+This is not intended to be a complete study of TeX internals.
+
+The goal is much simpler:
+
+\begin{itemize}
+
+  \item document the code paths that mattered during the competition;
+
+  \item explain the XeLaTeX behaviour required to understand the
+        exploit;
+
+  \item reconstruct how the individual primitives were chained;
+
+  \item preserve the payloads and reasoning behind the final PoC;
+
+  \item and document how the exploit was automated during the live CTF.
+
+\end{itemize}
+
+The next section begins with the first useful primitive:
+
+\begin{center}
+  \displayfont\large\bfseries
+  convincing LAMP to read a path it had never actually validated.
+\end{center}
