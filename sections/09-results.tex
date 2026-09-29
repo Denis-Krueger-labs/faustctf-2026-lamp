@@ -1,0 +1,235 @@
+% ============================================================
+% 09 -- LIVE CTF RESULTS
+% ============================================================
+
+\section{Live CTF Results}
+\label{sec:results}
+
+The exploit chain was not limited to our local copy of LAMP.
+
+During the live FAUST CTF, the same primitives were successfully used
+against vulnerable competition instances.
+
+The automated harvester was able to:
+
+\begin{itemize}
+
+  \item create attacker-controlled carrier accounts;
+
+  \item trigger the stored TeX injection;
+
+  \item execute commands inside remote LAMP containers;
+
+  \item search their recent checker state;
+
+  \item recover syntactically valid FAUST flags;
+
+  \item and submit those flags through MOTH.
+
+\end{itemize}
+
+Accepted submissions confirmed that the chain reached real, currently
+scorable service state rather than only historical test data.
+
+
+% ------------------------------------------------------------
+% 9.1
+% ------------------------------------------------------------
+
+\subsection{Not Every Recovered Flag Was Useful}
+
+The first harvesting attempts searched large parts of
+\code{/storage}.
+
+That produced many valid-looking flags, but Attack/Defense flags have a
+limited useful lifetime.
+
+By the time older entries were submitted, many were already duplicates
+or otherwise no longer useful for scoring.
+
+This was the reason the final harvester focused on the newest
+checker-like storage files instead of recursively dumping everything.
+
+The goal changed from:
+
+\begin{center}
+  \displayfont
+  ``find every flag ever stored''
+\end{center}
+
+to:
+
+\begin{center}
+  \displayfont\bfseries
+  ``find the freshest useful flags quickly.''
+\end{center}
+
+
+% ------------------------------------------------------------
+% 9.2
+% ------------------------------------------------------------
+
+\subsection{MOTH as the Feedback Loop}
+
+Each harvested batch was submitted through MOTH.
+
+The submission response distinguished between outcomes such as:
+
+\begin{lstlisting}
+accepted
+duplicate
+terminal_other
+retryable
+invalid
+\end{lstlisting}
+
+This was useful during exploitation because it separated two different
+questions:
+
+\begin{enumerate}
+
+  \item Did the exploit successfully recover something that looks like a
+        FAUST flag?
+
+  \item Was that flag still useful when it reached the gameserver?
+
+\end{enumerate}
+
+A batch containing mostly duplicates could therefore still indicate a
+working exploit.
+
+It simply meant that the harvested service state was older than ideal.
+
+
+% ------------------------------------------------------------
+% 9.3
+% ------------------------------------------------------------
+
+\subsection{Defenders Were Patching While We Were Exploiting}
+
+The most interesting operational behaviour was that vulnerability state
+changed during the game.
+
+A target that accepted the exploit earlier could reject the same request
+later.
+
+That was expected in an Attack/Defense CTF: once teams understood the
+service, they started modifying their own instances.
+
+Later LAMP versions we inspected contained explicit checks against the
+same primitives used by the exploit.
+
+Component creation was restricted to:
+
+\begin{lstlisting}
+light
+button
+source
+\end{lstlisting}
+
+instead of accepting arbitrary \code{typ} values.
+
+Registration also applied a strict allowlist to ship names, preventing
+the newline carrier.
+
+Reserved request-state header names were rejected before the request was
+passed into XeLaTeX, closing the \code{Path} overwrite.
+
+
+% ------------------------------------------------------------
+% 9.4
+% ------------------------------------------------------------
+
+\subsection{Why Target Classification Mattered}
+
+This meant that a failed exploit attempt did not have one universal
+meaning.
+
+A target might have been:
+
+\begin{center}
+\begin{tabular}{p{0.25\textwidth} p{0.61\textwidth}}
+  \toprule
+  \textbf{State} & \textbf{Meaning} \\
+  \midrule
+
+  Unreachable &
+  LAMP could not be contacted at all. \\[0.5em]
+
+  Broken &
+  The service responded, but normal operations such as registration
+  failed. \\[0.5em]
+
+  Patched &
+  The service worked normally but rejected one or more exploit
+  primitives. \\[0.5em]
+
+  Vulnerable &
+  The complete chain still reached command execution and flag
+  extraction. \\
+
+  \bottomrule
+\end{tabular}
+\end{center}
+
+Treating all four states as simply ``exploit failed'' would have made
+the automation considerably less useful.
+
+
+% ------------------------------------------------------------
+% 9.5
+% ------------------------------------------------------------
+
+\subsection{What Actually Mattered}
+
+The important result was not the total number of strings extracted from
+\code{/storage}.
+
+It was that the complete chain worked against live competition targets:
+
+\begin{center}
+\begin{tabular}{c}
+  attacker-controlled HTTP input \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  stored TeX injection \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  container-root command execution \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  checker state recovered \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  valid flags submitted \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  accepted competition submissions
+\end{tabular}
+\end{center}
+
+\begin{findingbox}
+The exploit was not merely a theoretical RCE.
+
+It was operationally usable during the live competition and produced
+real offensive scoring opportunities until vulnerable teams patched
+the relevant code paths.
+\end{findingbox}
+
+
+% ------------------------------------------------------------
+% 9.6
+% ------------------------------------------------------------
+
+\subsection{And Then the Window Closed}
+
+As more teams deployed fixes, the number of useful targets naturally
+decreased.
+
+That is probably the most representative summary of the live exploit:
+
+\begin{center}
+  \displayfont\large\bfseries
+  find it
+  $\longrightarrow$
+  weaponize it
+  $\longrightarrow$
+  automate it
+  $\longrightarrow$
+  watch everyone patch it.
+\end{center}

@@ -1,0 +1,317 @@
+% ============================================================
+% 10 -- ROOT CAUSE, FIXES, AND LESSONS LEARNED
+% ============================================================
+
+\section{Root Cause, Fixes, and Lessons Learned}
+\label{sec:lessons}
+
+LAMP was not compromised because of one spectacular bug.
+
+The exploit worked because attacker-controlled data repeatedly crossed
+boundaries between different interpreters without being constrained for
+the language it entered next.
+
+The complete chain involved:
+
+\begin{center}
+  \displayfont
+  HTTP
+  $\longrightarrow$
+  TeX
+  $\longrightarrow$
+  SQL
+  $\longrightarrow$
+  TeX
+  $\longrightarrow$
+  shell
+\end{center}
+
+At each step, a value that looked like ordinary application data in one
+context gained new meaning in another.
+
+
+% ------------------------------------------------------------
+% 10.1
+% ------------------------------------------------------------
+
+\subsection{Root Cause: Data Became Code}
+
+The most important vulnerability was not
+\code{--shell-escape} by itself.
+
+It was the loss of separation between data and executable TeX.
+
+The component type is the clearest example.
+
+It began as a POST value:
+
+\begin{lstlisting}
+typ=light
+\end{lstlisting}
+
+It was escaped for SQL and persisted into MariaDB.
+
+Later, the same value was reconstructed through:
+
+\begin{lstlisting}
+\edef\type#1{\compdata[3]}
+\end{lstlisting}
+
+At that point it was no longer merely database content.
+
+It could influence TeX expansion.
+
+Once attacker-controlled TeX existed inside a process started with shell
+escape enabled, the impact became operating-system command execution.
+
+\begin{findingbox}
+Escaping a value for one interpreter does not make it safe for the next
+interpreter.
+
+The component type was SQL-safe but not TeX-safe.
+\end{findingbox}
+
+
+% ------------------------------------------------------------
+% 10.2
+% ------------------------------------------------------------
+
+\subsection{Fixing the Path Collision}
+
+The \code{Path} vulnerability existed because HTTP headers and internal
+request variables shared the same dynamically constructed namespace.
+
+A header named:
+
+\begin{lstlisting}
+Path:
+\end{lstlisting}
+
+became:
+
+\begin{lstlisting}
+\httpPath
+\end{lstlisting}
+
+which collided directly with application state.
+
+A later defensive wrapper rejected header names corresponding to
+internal request variables before the request reached XeLaTeX:
+
+\begin{lstlisting}
+path
+method
+version
+query
+static
+line
+cookies
+\end{lstlisting}
+
+That prevents the specific overwrite used by the exploit.
+
+A cleaner design would go further and avoid placing external HTTP header
+names and internal application state in the same namespace at all.
+
+
+% ------------------------------------------------------------
+% 10.3
+% ------------------------------------------------------------
+
+\subsection{Fixing the Component Injection}
+
+The web interface only supported three component types:
+
+\begin{lstlisting}
+light
+button
+source
+\end{lstlisting}
+
+The vulnerable backend nevertheless accepted arbitrary values.
+
+The effective fix was therefore not complicated:
+
+\begin{lstlisting}
+typ =~ /^(?:light|button|source)$/
+\end{lstlisting}
+
+This is preferable to trying to blacklist TeX syntax.
+
+There are many ways to express interesting behaviour in TeX, and trying
+to enumerate dangerous tokens would leave unnecessary parser complexity.
+
+If a field has three valid values, then it should accept exactly three
+valid values.
+
+
+% ------------------------------------------------------------
+% 10.4
+% ------------------------------------------------------------
+
+\subsection{Fixing the Newline Carrier}
+
+The original \code{\textbackslash store} function attempted to escape
+characters with special meaning in TeX:
+
+\begin{lstlisting}
+\
+{
+}
+_
+^
+\end{lstlisting}
+
+The exploit did not need any of them.
+
+It only needed a newline.
+
+The patched request handling instead restricted ship names to a small
+set of expected characters before they reached the TeX application.
+
+That removed the ability to transform:
+
+\begin{lstlisting}
+\def \shipname {VALUE}
+\end{lstlisting}
+
+into a multi-line file containing an independent shell command.
+
+Again, the important lesson is that allowlisting the expected data is
+simpler than attempting to escape every dangerous representation.
+
+
+% ------------------------------------------------------------
+% 10.5
+% ------------------------------------------------------------
+
+\subsection{Shell Escape Multiplied the Impact}
+
+The TeX injection was the vulnerability.
+
+Shell escape was what made its consequences severe.
+
+LAMP was executed with:
+
+\begin{lstlisting}
+xelatex -8bit --shell-escape /srv/main.tex
+\end{lstlisting}
+
+Once arbitrary TeX expansion was achieved, the distance from TeX code
+execution to operating-system command execution became very small.
+
+If shell escape is not required, the obvious hardening measure is to
+disable it.
+
+If external command execution is genuinely required, the safer design
+is to expose only the specific operations the application needs rather
+than giving general TeX processing access to a shell.
+
+
+% ------------------------------------------------------------
+% 10.6
+% ------------------------------------------------------------
+
+\subsection{Defense in Depth}
+
+The competition patches closed the primitives used by this exploit.
+
+There are still several additional measures that would reduce the impact
+of similar mistakes.
+
+\begin{itemize}
+
+  \item Run XeLaTeX as a dedicated unprivileged user rather than root.
+
+  \item Give the process access only to files required by the service.
+
+  \item Keep attacker-controlled values as inert data instead of
+        reconstructing them as TeX source.
+
+  \item Validate input before passing it into the TeX interpreter.
+
+  \item Separate HTTP request metadata from internal TeX control
+        sequences.
+
+  \item Prefer strict allowlists for small enumerated fields such as
+        component types.
+
+  \item Disable unrestricted shell escape whenever possible.
+
+\end{itemize}
+
+None of these replaces correct input handling.
+
+They reduce the damage when correct input handling eventually fails.
+
+
+% ------------------------------------------------------------
+% 10.7
+% ------------------------------------------------------------
+
+\subsection{The Exploit in One Page}
+
+The entire chain can finally be summarized as:
+
+\begin{center}
+\begin{tabular}{c}
+  \code{Path:} overwrites \code{\textbackslash httpPath} \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  arbitrary file retrieval \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  attacker-controlled \code{typ} stored in MariaDB \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  database value reconstructed as TeX \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  \code{\^{}\^{}5cUseName\{@@input\}} reaches shell escape \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  container-root command execution \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  newline-injected ship file becomes long-command carrier \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  recent checker storage searched \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  flags retrieved through the original \code{Path} primitive \\[0.25em]
+  $\downarrow$ \\[0.25em]
+  MOTH submission
+\end{tabular}
+\end{center}
+
+
+% ------------------------------------------------------------
+% 10.8
+% ------------------------------------------------------------
+
+\subsection{Final Takeaway}
+
+LAMP is a good example of why unusual software stacks produce unusual
+security boundaries.
+
+HTTP headers became TeX macros.
+
+Database strings became TeX macros.
+
+User-controlled text became files that were later interpreted again.
+
+And the TeX interpreter had access to a shell.
+
+Individually, several of those decisions were manageable.
+
+Together, they produced a chain from one HTTP request field to root
+command execution inside the service container.
+
+\begin{findingbox}
+The useful question was never:
+
+\begin{center}
+``Is LaTeX dangerous?''
+\end{center}
+
+It was:
+
+\begin{center}
+``At what point does attacker-controlled data become executable LaTeX?''
+\end{center}
+
+Once that boundary was found, the rest of LAMP went brrr.
+\end{findingbox}

