@@ -651,30 +651,14 @@
   bottom=1mm
 ]
 
-This report documents the analysis and exploitation of the
-\emph{LAMP} service during FAUST CTF 2026.
+This report documents the analysis and exploitation of LAMP (\emph{LaTeX, Apache, MariaDB, Pain}) 
+during FAUST CTF 2026. The service used XeLaTeX for parts of its HTTP handling and application logic,
+creating several paths for user-controlled data to become executable TeX.
 
-The service---appropriately expanded as
-\emph{LaTeX, Apache, MariaDB, Pain}---implemented significant portions
-of its HTTP processing and application logic using XeLaTeX.
-
-The investigation identified multiple weaknesses across the service's
-request parsing, TeX processing, persistence, and rendering mechanisms.
-Individually, these weaknesses exposed constrained primitives including
-arbitrary file access and stored TeX injection. When chained together,
-they enabled operating system command execution as root within the LAMP
-service container.
-
-A 32-byte limit on the primary injection field initially constrained the
-usefulness of the command-execution primitive. The restriction was
-subsequently bypassed by abusing newline handling in persisted ship
-names, allowing attacker-controlled files within the application's
-storage directory to act as shell-command carriers.
-
-The completed exploit chain was operationalized during the live
-Attack/Defense competition, used to recover service flags from opposing
-teams, and integrated with the team's automated flag-submission
-infrastructure.
+We show how a \code{Path} header overwrite enabled file reads and how a stored component type led to command execution as root inside the service container. 
+A newline in a persisted ship name provided a carrier for commands that exceeded the component field's 32-byte limit.
+During the live Attack/Defense competition, 
+we used the resulting chain to recover flags from vulnerable instances and submit them through our team's MOTH infrastructure.
 
 \end{tcolorbox}
 
@@ -697,32 +681,14 @@ infrastructure.
 \pagenumbering{arabic}
 
 \input{sections/01-introduction}
-\clearpage
-
 \input{sections/02-service-overview}
-\clearpage
-
 \input{sections/03-path-header}
-\clearpage
-
 \input{sections/04-stored-tex-injection}
-\clearpage
-
 \input{sections/05-rce}
-\clearpage
-
 \input{sections/06-carrier-bypass}
-\clearpage
-
 \input{sections/07-flag-harvesting}
-\clearpage
-
 \input{sections/08-automation}
-\clearpage
-
 \input{sections/09-results}
-\clearpage
-
 \input{sections/10-lessons-learned}
 
 \end{document}

@@ -1,183 +1,25 @@
-% ============================================================
-% 02 -- SERVICE OVERVIEW
-% ============================================================
-
-\section{Service Overview: HTTP, but Make It TeX}
+\section{Service Overview}
 \label{sec:service-overview}
 
-Before looking at the individual vulnerabilities, it helps to understand
-how a request moves through LAMP.
+The entry point, \code{/srv/main.tex}, configured Redis and MariaDB, loaded
+custom HTTP handling and authentication middleware, then called
+\code{\textbackslash httpServe\{\}}. Request lines, headers, POST values,
+database rows, and stored files all entered the TeX process. With shell escape
+enabled, TeX also invoked the MariaDB client through \code{\textbackslash write18}.
 
-The central application entry point was \code{/srv/main.tex}. It configured
-the service's Redis and MariaDB connections, loaded the custom HTTP
-implementation, installed the authentication middleware, and finally started
-request processing with:
-
-\begin{lstlisting}
-\httpMiddlewareUse{\authMiddleware}
-\httpServe{}
-\end{lstlisting}
-
-In other words, XeLaTeX was not merely generating a page after some other
-application had handled the request.
-
-It was part of the application itself.
-
-
-% ------------------------------------------------------------
-% 2.1
-% ------------------------------------------------------------
-
-\subsection{Request Flow}
-
-At a high level, a request followed this path:
-
-\begin{enumerate}
-
-  \item an HTTP request reached the LAMP service;
-
-  \item the request was passed into the XeLaTeX process;
-
-  \item the custom HTTP code parsed the request line, headers, cookies,
-        query parameters, and POST body;
-
-  \item the requested page was selected and loaded as TeX;
-
-  \item application state was read from Redis, MariaDB, or files under
-        \code{/storage};
-
-  \item XeLaTeX expanded the resulting macros and generated the HTTP
-        response.
-
-\end{enumerate}
-
-The important part is that HTTP state eventually became TeX state.
-
-Headers could become control sequences. POST parameters became macros.
-Database values were read back into TeX. Files containing user-controlled
-data were later included by the renderer.
-
-This created several opportunities for data that was originally supposed
-to be passive to become executable TeX.
-
-
-% ------------------------------------------------------------
-% 2.2
-% ------------------------------------------------------------
-
-\subsection{Where LAMP Stored Its State}
-
-LAMP split its state across three main locations.
-
-\begin{center}
-\begin{tabular}{p{0.22\textwidth} p{0.66\textwidth}}
-  \toprule
-  \textbf{Storage} & \textbf{Purpose} \\
-  \midrule
-
-  Redis &
-  Sessions, usernames, passwords, and temporary authentication state. \\[0.4em]
-
-  MariaDB &
-  Ships and their components, including component coordinates, type,
-  state, and properties. \\[0.4em]
-
-  \code{/storage} &
-  Per-user TeX files containing persistent ship data such as the ship
-  name. \\
-
-  \bottomrule
-\end{tabular}
-\end{center}
-
-Even the database access was performed through TeX.
-
-The custom SQL package wrote a query into a temporary file and then used
-shell escape to invoke the MariaDB command-line client:
-
-\begin{lstlisting}
-\immediate\write18{
-  mariadb ... < sqltmp.tex > sqloutput.tex
-}
-\end{lstlisting}
-
-The result was then read back into the running TeX process.
-
-Redis was handled in a similarly unusual fashion. TeX generated Redis
-protocol messages and exchanged them with the Redis container through
-a small helper script.
-
-None of this was directly exploitable simply because it was unusual.
-
-It did, however, mean that the boundaries between:
-
-\begin{center}
-  \displayfont
-  HTTP
-  $\longleftrightarrow$
-  TeX
-  $\longleftrightarrow$
-  database
-  $\longleftrightarrow$
-  filesystem
-  $\longleftrightarrow$
-  shell
-\end{center}
-
-were extremely important.
-
-
-% ------------------------------------------------------------
-% 2.3
-% ------------------------------------------------------------
-
-\subsection{Persistent Ship Data}
-
-Registration created more than a Redis account and a MariaDB ship entry.
-
-LAMP also opened a file beneath \code{/storage} using the username and
-stored the chosen ship name inside it:
+Redis held sessions and account data; MariaDB held ships and components.
+Registration wrote each ship name to a per-user TeX file under
+\code{/storage}. Viewing a ship included that file again:
 
 \begin{lstlisting}
 \immediate\openout\shipfile=/storage/\postusername{}
 \store{\shipname}{\postshipname{}}
 \immediate\closeout\shipfile{}
-\end{lstlisting}
 
-When the user later viewed their ship, the corresponding file was loaded
-again:
-
-\begin{lstlisting}
+% During a later request:
 \input{/storage/\username{}.tex}
 \end{lstlisting}
 
-This detail becomes important later.
-
-For now, the important observation is simply that attacker-controlled
-data could survive a request, be written to disk as TeX, and then be
-interpreted again during a future request.
-
-
-% ------------------------------------------------------------
-% 2.4
-% ------------------------------------------------------------
-
-\subsection{The First Useful Boundary}
-
-The service contained a number of unusual trust boundaries, but the first
-one that produced a useful exploitation primitive appeared very early in
-request handling.
-
-LAMP validated the path from the HTTP request line.
-
-It then parsed the request headers.
-
-One particular header could change the path that the application would
-actually use afterwards.
-
-That gave us our first primitive:
-
-\begin{center}
-  \displayfont\large\bfseries
-  arbitrary file access through the \code{Path} header.
-\end{center}
+The relevant trust boundaries were HTTP to TeX, database to TeX, and stored
+text to a file that the service later interpreted. The next sections show
+where those boundaries failed.

