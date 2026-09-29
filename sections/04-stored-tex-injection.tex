@@ -1,0 +1,290 @@
+% ============================================================
+% 04 -- STORED TEX INJECTION
+% ============================================================
+
+\section{Stored TeX Injection Through Component Types}
+\label{sec:stored-tex-injection}
+
+The file-read primitive was useful, but it did not yet allow us to
+execute anything.
+
+The next interesting input was the component type.
+
+In the normal web interface, a component could be one of three values:
+
+\begin{lstlisting}
+light
+button
+source
+\end{lstlisting}
+
+The browser generated a POST request containing the selected type:
+
+\begin{lstlisting}
+action=add&x=100&y=100&typ=light
+\end{lstlisting}
+
+The important part was that the vulnerable backend did not treat
+\code{typ} as an enum.
+
+It treated it as data.
+
+
+% ------------------------------------------------------------
+% 4.1
+% ------------------------------------------------------------
+
+\subsection{From HTTP to MariaDB}
+
+When a component was added, LAMP took the POST parameter
+\code{typ}, escaped it for SQL, and inserted it into the
+\code{components} table:
+
+\begin{lstlisting}
+\sqlescape{\posttyp{}}{\type}
+
+\sql{
+  INSERT INTO components SET
+    x = "\xcoord",
+    y = "\ycoord",
+    type = "\type",
+    state = IF("\type" = "source", 1, 0),
+    ship = \rowdata[0]
+}{\ignore}
+\end{lstlisting}
+
+The use of \code{\textbackslash sqlescape} initially looks reassuring.
+
+It prevents the value from trivially breaking out of the SQL string.
+
+But SQL injection was not the problem.
+
+The value was supposed to survive the database.
+
+That was exactly what we wanted.
+
+
+% ------------------------------------------------------------
+% 4.2
+% ------------------------------------------------------------
+
+\subsection{MariaDB Back to TeX}
+
+When the ship was rendered again, LAMP selected the stored components:
+
+\begin{lstlisting}
+SELECT id, x, y, type, state, properties
+FROM components
+WHERE ship = \id;
+\end{lstlisting}
+
+Each returned row was parsed and the database fields were turned back
+into TeX macros:
+
+\begin{lstlisting}
+\sqlparserow{\c}{compdata}
+
+\edef\x{\compdata[1]}
+\edef\y{\compdata[2]}
+\edef\properties#1{\compdata[5]}
+\edef\type#1{\compdata[3]}
+\end{lstlisting}
+
+The interesting line was:
+
+\begin{lstlisting}
+\edef\type#1{\compdata[3]}
+\end{lstlisting}
+
+The value in \code{components.type} was no longer just a database
+string.
+
+It was being inserted into an \code{\textbackslash edef} and processed
+by TeX again.
+
+
+% ------------------------------------------------------------
+% 4.3
+% ------------------------------------------------------------
+
+\subsection{Why \texttt{\textbackslash edef} Matters}
+
+For this writeup, the important thing about
+\code{\textbackslash edef} is simple:
+
+\begin{center}
+  it expands commands while defining the macro.
+\end{center}
+
+For an expected component type such as:
+
+\begin{lstlisting}
+light
+\end{lstlisting}
+
+nothing interesting happens.
+
+The resulting macro is effectively:
+
+\begin{lstlisting}
+\type{} -> light
+\end{lstlisting}
+
+But if the stored database value contains TeX syntax, that syntax can be
+interpreted when the value is reconstructed.
+
+The application then used \code{\textbackslash type} repeatedly while
+building the HTML response:
+
+\begin{lstlisting}
+\output{
+  <input
+    class="component \type{} \state"
+    style="--img: url('/components/\type{}_\state.svg');"
+  />
+}
+\end{lstlisting}
+
+This gave us a persistent input path:
+
+\begin{center}
+  \displayfont
+  HTTP POST
+  $\longrightarrow$
+  \code{typ}
+  $\longrightarrow$
+  MariaDB
+  $\longrightarrow$
+  \code{\textbackslash edef}
+  $\longrightarrow$
+  TeX expansion
+\end{center}
+
+
+% ------------------------------------------------------------
+% 4.4
+% ------------------------------------------------------------
+
+\subsection{Escaped for the Wrong Language}
+
+This is the part that makes the bug particularly easy to miss.
+
+The input was escaped.
+
+It was simply escaped for the wrong interpreter.
+
+\code{\textbackslash sqlescape} protected the SQL statement from values
+such as quotes and backslashes that would otherwise alter the SQL
+syntax.
+
+Once the value came back from MariaDB, however, it entered a completely
+different language:
+
+\begin{center}
+  \displayfont\bfseries
+  TeX.
+\end{center}
+
+SQL escaping does not make a string safe to evaluate as TeX.
+
+\begin{findingbox}
+The \code{typ} parameter crossed two different interpreter boundaries.
+
+It was correctly escaped for MariaDB, but later reconstructed and
+expanded as TeX without a corresponding TeX safety boundary.
+
+This turned \code{components.type} into a stored TeX injection
+primitive.
+\end{findingbox}
+
+
+% ------------------------------------------------------------
+% 4.5
+% ------------------------------------------------------------
+
+\subsection{The Weird Backslash Problem}
+
+There was still one annoying problem.
+
+Useful TeX commands normally begin with a backslash:
+
+\begin{lstlisting}
+\something
+\end{lstlisting}
+
+Sending a literal backslash through LAMP's parsing, escaping, storage,
+and reconstruction path was not particularly cooperative.
+
+TeX, unfortunately for the defenders, has another way to represent
+characters.
+
+The notation:
+
+\begin{lstlisting}
+^^5c
+\end{lstlisting}
+
+represents the character with hexadecimal value \code{5c}.
+
+ASCII \code{0x5c} is:
+
+\begin{center}
+  \code{\textbackslash}
+\end{center}
+
+So a payload beginning with:
+
+\begin{lstlisting}
+^^5cUseName
+\end{lstlisting}
+
+could become:
+
+\begin{lstlisting}
+\UseName
+\end{lstlisting}
+
+when TeX processed it.
+
+That gave us a compact way to smuggle a control-sequence introducer
+through the input path without sending the literal character we
+actually wanted.
+
+
+% ------------------------------------------------------------
+% 4.6
+% ------------------------------------------------------------
+
+\subsection{What We Had at This Point}
+
+The exploit chain now contained two useful primitives.
+
+The first provided arbitrary file retrieval:
+
+\begin{lstlisting}
+Path: /../../...
+\end{lstlisting}
+
+The second allowed attacker-controlled component data to be stored in
+MariaDB and later interpreted as TeX:
+
+\begin{lstlisting}
+typ
+  -> SQL
+  -> components.type
+  -> \edef\type
+  -> TeX
+\end{lstlisting}
+
+What we still needed was a TeX primitive that could cross the final
+boundary:
+
+\begin{center}
+  \displayfont\large\bfseries
+  TeX
+  $\longrightarrow$
+  operating-system command execution.
+\end{center}
+
+This is where \code{--shell-escape} stopped being an interesting
+configuration detail and became the entire problem.
