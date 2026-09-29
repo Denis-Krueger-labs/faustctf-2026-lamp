@@ -654,7 +654,6 @@
 This report documents the analysis and exploitation of LAMP (\emph{LaTeX, Apache, MariaDB, Pain}) 
 during FAUST CTF 2026. The service used XeLaTeX for parts of its HTTP handling and application logic,
 creating several paths for user-controlled data to become executable TeX.
-
 We show how a \code{Path} header overwrite enabled file reads and how a stored component type led to command execution as root inside the service container. 
 A newline in a persisted ship name provided a carrier for commands that exceeded the component field's 32-byte limit.
 During the live Attack/Defense competition, 
